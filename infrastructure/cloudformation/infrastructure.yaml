@@ -1,0 +1,505 @@
+# AWSTemplateFormatVersion: "2010-09-09"
+# Description: "Robust Data Processor - Multi-tenant event-driven pipeline"
+
+# Parameters:
+#   ProjectName:
+#     Type: String
+#     Default: robust-data-processor
+#     Description: Name prefix for resources
+
+#   Environment:
+#     Type: String
+#     Default: production
+#     Description: Environment name
+
+# Resources:
+#   # SQS Queue for message broker
+#   ProcessingQueue:
+#     Type: AWS::SQS::Queue
+#     Properties:
+#       QueueName: !Sub "${ProjectName}-queue-${Environment}"
+#       VisibilityTimeout: 300 # 5 minutes (enough for processing)
+#       MessageRetentionPeriod: 345600 # 4 days
+#       ReceiveMessageWaitTimeSeconds: 20 # Long polling
+#       RedrivePolicy:
+#         deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+#         maxReceiveCount: 3
+
+#   # Dead Letter Queue for failed messages
+#   DeadLetterQueue:
+#     Type: AWS::SQS::Queue
+#     Properties:
+#       QueueName: !Sub "${ProjectName}-dlq-${Environment}"
+#       MessageRetentionPeriod: 1209600 # 14 days
+
+#   # DynamoDB Table with multi-tenant structure
+#   LogsTable:
+#     Type: AWS::DynamoDB::Table
+#     Properties:
+#       TableName: !Sub "${ProjectName}-logs-${Environment}"
+#       BillingMode: PAY_PER_REQUEST # On-demand for free tier
+#       AttributeDefinitions:
+#         - AttributeName: tenant_id
+#           AttributeType: S
+#         - AttributeName: log_id
+#           AttributeType: S
+#       KeySchema:
+#         - AttributeName: tenant_id
+#           KeyType: HASH # Partition key (strict tenant isolation)
+#         - AttributeName: log_id
+#           KeyType: RANGE # Sort key
+#       PointInTimeRecoverySpecification:
+#         PointInTimeRecoveryEnabled: true
+#       Tags:
+#         - Key: Project
+#           Value: !Ref ProjectName
+#         - Key: Environment
+#           Value: !Ref Environment
+
+#   # IAM Role for Ingestion Lambda
+#   IngestionLambdaRole:
+#     Type: AWS::IAM::Role
+#     Properties:
+#       RoleName: !Sub "${ProjectName}-ingestion-role-${Environment}"
+#       AssumeRolePolicyDocument:
+#         Version: "2012-10-17"
+#         Statement:
+#           - Effect: Allow
+#             Principal:
+#               Service: lambda.amazonaws.com
+#             Action: sts:AssumeRole
+#       ManagedPolicyArns:
+#         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+#       Policies:
+#         - PolicyName: SQSPublish
+#           PolicyDocument:
+#             Version: "2012-10-17"
+#             Statement:
+#               - Effect: Allow
+#                 Action:
+#                   - sqs:SendMessage
+#                 Resource: !GetAtt ProcessingQueue.Arn
+
+#   # IAM Role for Worker Lambda
+#   WorkerLambdaRole:
+#     Type: AWS::IAM::Role
+#     Properties:
+#       RoleName: !Sub "${ProjectName}-worker-role-${Environment}"
+#       AssumeRolePolicyDocument:
+#         Version: "2012-10-17"
+#         Statement:
+#           - Effect: Allow
+#             Principal:
+#               Service: lambda.amazonaws.com
+#             Action: sts:AssumeRole
+#       ManagedPolicyArns:
+#         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+#       Policies:
+#         - PolicyName: DynamoDBWrite
+#           PolicyDocument:
+#             Version: "2012-10-17"
+#             Statement:
+#               - Effect: Allow
+#                 Action:
+#                   - dynamodb:PutItem
+#                   - dynamodb:GetItem
+#                 Resource: !GetAtt LogsTable.Arn
+#         - PolicyName: SQSReceive
+#           PolicyDocument:
+#             Version: "2012-10-17"
+#             Statement:
+#               - Effect: Allow
+#                 Action:
+#                   - sqs:ReceiveMessage
+#                   - sqs:DeleteMessage
+#                   - sqs:GetQueueAttributes
+#                 Resource: !GetAtt ProcessingQueue.Arn
+
+#   # Ingestion Lambda Function
+#   IngestionLambda:
+#     Type: AWS::Lambda::Function
+#     Properties:
+#       FunctionName: !Sub "${ProjectName}-ingestion-${Environment}"
+#       Runtime: nodejs20.x
+#       Handler: ingestion_handler.handler
+#       Role: !GetAtt IngestionLambdaRole.Arn
+#       Timeout: 30
+#       MemorySize: 256
+#       Environment:
+#         Variables:
+#           SQS_QUEUE_URL: !Ref ProcessingQueue
+#       Code:
+#         ZipFile: |
+#           // Placeholder - upload actual code via deployment package
+#           exports.handler = async (event) => {
+#             return { statusCode: 200, body: JSON.stringify({ message: 'Upload deployment package' }) };
+#           };
+
+#   # Worker Lambda Function
+#   WorkerLambda:
+#     Type: AWS::Lambda::Function
+#     Properties:
+#       FunctionName: !Sub "${ProjectName}-worker-${Environment}"
+#       Runtime: nodejs20.x
+#       Handler: worker_handler.handler
+#       Role: !GetAtt WorkerLambdaRole.Arn
+#       Timeout: 300 # 15 minutes (max Lambda timeout)
+#       MemorySize: 512
+#       Environment:
+#         Variables:
+#           DYNAMODB_TABLE_NAME: !Ref LogsTable
+#       Code:
+#         ZipFile: |
+#           // Placeholder - upload actual code via deployment package
+#           exports.handler = async (event) => {
+#             return { statusCode: 200, body: JSON.stringify({ message: 'Upload deployment package' }) };
+#           };
+
+#   # SQS Event Source Mapping for Worker Lambda
+#   WorkerEventSourceMapping:
+#     Type: AWS::Lambda::EventSourceMapping
+#     Properties:
+#       EventSourceArn: !GetAtt ProcessingQueue.Arn
+#       FunctionName: !GetAtt WorkerLambda.Arn
+#       BatchSize: 10 # Process up to 10 messages at once
+#       MaximumBatchingWindowInSeconds: 5
+#       Enabled: true
+
+#   # API Gateway REST API
+#   ApiGateway:
+#     Type: AWS::ApiGateway::RestApi
+#     Properties:
+#       Name: !Sub "${ProjectName}-api-${Environment}"
+#       Description: Robust Data Processor API
+#       EndpointConfiguration:
+#         Types:
+#           - REGIONAL
+
+#   # API Gateway Resource for /ingest
+#   IngestResource:
+#     Type: AWS::ApiGateway::Resource
+#     Properties:
+#       RestApiId: !Ref ApiGateway
+#       ParentId: !GetAtt ApiGateway.RootResourceId
+#       PathPart: ingest
+
+#   # POST Method for /ingest
+#   IngestMethod:
+#     Type: AWS::ApiGateway::Method
+#     Properties:
+#       RestApiId: !Ref ApiGateway
+#       ResourceId: !Ref IngestResource
+#       HttpMethod: POST
+#       AuthorizationType: NONE
+#       Integration:
+#         Type: AWS_PROXY
+#         IntegrationHttpMethod: POST
+#         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestionLambda.Arn}/invocations"
+
+#   # Lambda Permission for API Gateway
+#   ApiGatewayInvokePermission:
+#     Type: AWS::Lambda::Permission
+#     Properties:
+#       FunctionName: !GetAtt IngestionLambda.Arn
+#       Action: lambda:InvokeFunction
+#       Principal: apigateway.amazonaws.com
+#       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*"
+
+#   # API Gateway Deployment
+#   ApiDeployment:
+#     Type: AWS::ApiGateway::Deployment
+#     DependsOn: IngestMethod
+#     Properties:
+#       RestApiId: !Ref ApiGateway
+#       StageName: !Ref Environment
+
+#   # # API Gateway Stage
+#   # ApiStage:
+#   #   Type: AWS::ApiGateway::Stage
+#   #   Properties:
+#   #     RestApiId: !Ref ApiGateway
+#   #     DeploymentId: !Ref ApiDeployment
+#   #     StageName: !Ref Environment
+#   #     Description: Production stage
+
+# Outputs:
+#   ApiEndpoint:
+#     Description: API Gateway endpoint URL
+#     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/ingest"
+#     Export:
+#       Name: !Sub "${ProjectName}-api-endpoint-${Environment}"
+
+#   SQSQueueUrl:
+#     Description: SQS Queue URL
+#     Value: !Ref ProcessingQueue
+#     Export:
+#       Name: !Sub "${ProjectName}-queue-url-${Environment}"
+
+#   DynamoDBTableName:
+#     Description: DynamoDB Table Name
+#     Value: !Ref LogsTable
+#     Export:
+#       Name: !Sub "${ProjectName}-table-name-${Environment}"
+
+#   IngestionLambdaArn:
+#     Description: Ingestion Lambda Function ARN
+#     Value: !GetAtt IngestionLambda.Arn
+
+#   WorkerLambdaArn:
+#     Description: Worker Lambda Function ARN
+#     Value: !GetAtt WorkerLambda.Arn
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Robust Data Processor - Multi-tenant event-driven pipeline"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: robust-data-processor
+    Description: Name prefix for resources
+
+  Environment:
+    Type: String
+    Default: production
+    Description: Environment name
+
+Resources:
+  ############################################
+  # S3 Deployment Bucket for Lambda Packages #
+  ############################################
+  DeploymentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-lambda-${Environment}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+
+  ############################################
+  # SQS Queues                               #
+  ############################################
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-queue-${Environment}"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+
+  ############################################
+  # DynamoDB Table                           #
+  ############################################
+  LogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-logs-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tenant_id
+          AttributeType: S
+        - AttributeName: log_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tenant_id
+          KeyType: HASH
+        - AttributeName: log_id
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ############################################
+  # IAM Roles                                #
+  ############################################
+  IngestionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ingestion-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSPublish
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt ProcessingQueue.Arn
+
+  WorkerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-worker-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt LogsTable.Arn
+        - PolicyName: SQSReceive
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ProcessingQueue.Arn
+
+  ############################################
+  # Lambda Functions                          #
+  ############################################
+  IngestionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-ingestion-${Environment}"
+      Runtime: nodejs20.x
+      Handler: ingestion_handler.handler
+      Role: !GetAtt IngestionLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref ProcessingQueue
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: 'Placeholder - Upload deployment package' })
+            };
+          };
+
+  WorkerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-worker-${Environment}"
+      Runtime: nodejs20.x
+      Handler: worker_handler.handler
+      Role: !GetAtt WorkerLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref LogsTable
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Placeholder - Upload deployment package' })
+            };
+          };
+
+  ############################################
+  # SQS → Lambda Event Mapping                #
+  ############################################
+  WorkerEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ProcessingQueue.Arn
+      FunctionName: !GetAtt WorkerLambda.Arn
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: true
+
+  ############################################
+  # API Gateway                               #
+  ############################################
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${ProjectName}-api-${Environment}"
+      Description: Robust Data Processor API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  IngestResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: ingest
+
+  IngestMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref IngestResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestionLambda.Arn}/invocations"
+
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IngestionLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: IngestMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref Environment
+
+############################################
+# Outputs                                   #
+############################################
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/ingest"
+
+  SQSQueueUrl:
+    Description: SQS Queue URL
+    Value: !Ref ProcessingQueue
+
+  DynamoDBTableName:
+    Description: DynamoDB Table Name
+    Value: !Ref LogsTable
+
+  IngestionLambdaArn:
+    Description: Ingestion Lambda Function ARN
+    Value: !GetAtt IngestionLambda.Arn
+
+  WorkerLambdaArn:
+    Description: Worker Lambda Function ARN
+    Value: !GetAtt WorkerLambda.Arn

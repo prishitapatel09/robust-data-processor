@@ -1,0 +1,19 @@
+{
+  "name": "robust-data-processor-ingestion",
+  "version": "1.0.0",
+  "description": "Ingestion Lambda function for Robust Data Processor",
+  "main": "ingestion_handler.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "sqs"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.490.0"
+  }
+}
